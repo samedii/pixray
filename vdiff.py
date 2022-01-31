@@ -59,6 +59,7 @@ class VdiffDrawer(DrawingInterface):
         parser.add_argument("--vdiff_model", type=str, help="VDIFF model from [yfcc_2, yfcc_1, cc12m_1, cc12m_1_cfg]", default='yfcc_2', dest='vdiff_model')
         parser.add_argument("--vdiff_schedule", type=str, help="VDIFF schedule [default, log]", default="default", dest='vdiff_schedule')
         parser.add_argument("--vdiff_skip", type=float, help="skip a percentage of the way into the decay schedule (0-100)", default=0, dest='vdiff_skip')
+        parser.add_argument("--vdiff_reverse_sample", type=int, help="reverse sample init image to get starting tensor", default=0, dest='vdiff_reverse_sample')
         return parser
 
     def __init__(self, settings):
@@ -74,6 +75,7 @@ class VdiffDrawer(DrawingInterface):
         self.active_clip_models = settings.clip_models
         self.eta = 1
         self.vdiff_skip = settings.vdiff_skip
+        self.vdiff_reverse_sample = settings.vdiff_reverse_sample
 
     def load_model(self, settings, device):
         model = get_model(self.vdiff_model)()
@@ -122,18 +124,27 @@ class VdiffDrawer(DrawingInterface):
 
         # todo: maybe scheduld should adjust better due to init_skip?
         if init_tensor is not None:
+            if self.vdiff_reverse_sample == 1:
+                zero_embed = torch.zeros([1, self.gen_height * self.gen_width]).to(self.x)
+                steps_ = torch.cat([torch.zeros(1).to(self.steps), self.steps.flip(0)])
+                init_tensor = sampling.reverse_sample(self.model, init_tensor, steps_, {'clip_embed': zero_embed})
+
             # reverse-center crop
             new_x = torch.randn([1, 3, self.gen_height, self.gen_width], device=self.device)
+
             margin_x = int((self.gen_width - self.canvas_width)/2)
             margin_y = int((self.gen_height - self.canvas_height)/2)
             if (margin_x != 0 or margin_y != 0):
                 new_x[:,:,margin_y:(margin_y+self.canvas_height),margin_x:(margin_x+self.canvas_width)] = init_tensor
             else:
                 new_x = init_tensor
-            # by default the image is 99% based on init_tensor (for now)
-            self.x = new_x * 0.99 + self.x * 0.01
 
-        # [model, steps, eta, extra_args, ts, alphas, sigmas]
+            if self.vdiff_reverse_sample == 1:
+                self.x = new_x
+            else:
+                # by default the image is 99% based on init_tensor (for now)
+                self.x = new_x * 0.99 + self.x * 0.01
+
         self.sample_state = sampling.sample_setup(self.model, self.x, self.steps, self.eta, {})
         self.x.requires_grad_(True)
         self.pred = None 
